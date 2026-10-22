@@ -16,5 +16,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Start proxy in background
+        shell: bash
+        run: |
+          python main.py --no-menu --port 61040 &
+          sleep 4
+          curl -s -o /dev/null -w "healthz=%{http_code}\n" http://127.0.0.1:61040/healthz
+
       - name: Run selfcheck
         run: python tests/selfcheck.py
