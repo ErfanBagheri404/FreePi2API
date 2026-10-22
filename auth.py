@@ -70,7 +70,10 @@ def login(print=print):
     if status != 200 or "session_id" not in device:
         raise RuntimeError("device flow failed: HTTP %s %s" % (status, device))
     sid = device["session_id"]
-    print("\nOpen %s and enter code: %s\n" % (device.get("verification_uri"), device.get("user_code")))
+    print("\n  Open:  %s" % device.get("verification_uri"))
+    print("  Code:  %s\n" % device.get("user_code"))
+    print("  If you land on a GitHub sign-in page instead of a code box, log in to")
+    print("  GitHub in that same browser first, then open the URL again.\n")
     _post("/auth/consent", {"session_id": sid, "consent_version": CONSENT_VERSION})
     interval = device.get("interval") or 5
     deadline = time.time() + 900
@@ -82,6 +85,12 @@ def login(print=print):
             return body["token"]
         if status == 403 and body.get("code") == "consent_required":
             raise RuntimeError("server did not record consent; rerun login")
+        # The server forwards GitHub's backoff. Polling faster than asked makes
+        # GitHub answer slow_down and pushes the token out by the full window.
+        wait = body.get("retry_after")
+        if isinstance(wait, (int, float)) and wait > 0:
+            interval = min(max(wait, 5), 60)
+            print("  waiting %ss (upstream backoff)..." % int(interval))
         time.sleep(interval)
     raise RuntimeError("login timed out")
 
