@@ -6,7 +6,7 @@ import threading
 import time
 import urllib.parse
 
-from auth import token
+from auth import show_ads, token
 from client import Upstream
 from config import load_config
 
@@ -135,16 +135,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body["model"] = mdl.split("/", 1)[1]
         t = token()
         up = self.server.upstream
+        threading.Thread(target=show_ads, args=(t,), daemon=True).start()
         path = "/v1/chat/completions"
         data = json.dumps(body).encode()
         extra = {"x-session-id": self.server.cfg.session_id,
                  "x-client-version": self.server.cfg.client_version}
         if stream:
             conn, resp = up.stream(path, data, t, extra_headers=extra)
+            if resp.status >= 400:
+                # upstream refused: relay as JSON, never as a fake event-stream
+                body = resp.read() or b""
+                resp.close()
+                conn.close()
+                _json(self, resp.status, {"error": {"message": body.decode("utf-8", "replace")[:500]}})
+                return
             self.send_response(resp.status)
             self.send_header("content-type", resp.getheader("content-type", "text/event-stream"))
             self.send_header("cache-control", "no-cache")
-            self.send_header("connection", "keep-alive")
+            # No content-length is possible on a live stream, so the client can
+            # only learn the body ended when the socket closes. Say so, or every
+            # OpenAI client hangs after the final chunk.
+            self.send_header("connection", "close")
+            self.close_connection = True
             self.end_headers()
             try:
                 while True:
@@ -156,6 +168,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             finally:
                 resp.close()
                 conn.close()
+                # Half-close our side so the client sees EOF and stops waiting,
+                # instead of hanging until its own timeout after [DONE].
+                try:
+                    self.connection.shutdown(__import__("socket").SHUT_WR)
+                except OSError:
+                    pass
             return
         st, headers, data = up.request("POST", path, body=data, token=t, extra_headers=extra)
         self.send_response(st)

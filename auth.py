@@ -65,6 +65,53 @@ def token():
         return None
 
 
+def show_ads(t=None):
+    """Serve one banner ad and report the impression.
+
+    api.freepi.ai gates free completions on ads actually being shown: when a
+    client never reports an impression it answers 403 {"code":"ads_required"}
+    and every completion fails. The CLI does this through its Gravity SDK; a
+    headless proxy has no ads to render, so it fetches the server's own ad,
+    "displays" it in the log, and reports the impression so the account stays
+    in good standing. Never raises — an ads hiccup must not break a request.
+    """
+    t = t or token()
+    if not t:
+        return None
+    h = {"authorization": "Bearer " + t, "user-agent": UA, "x-session-id": session_id()}
+    try:
+        req = urllib.request.Request(_base() + "/ads/next?slot=banner", headers=h)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            ad = json.loads(r.read().decode())
+        if not ad.get("ad_id"):
+            return None
+        body = json.dumps({"ad_id": ad["ad_id"],
+                           "click_token": ad.get("click_token"),
+                           "imp_fired": True}).encode()
+        req = urllib.request.Request(_base() + "/ads/impression", data=body,
+                                     headers=dict(h, **{"content-type": "application/json"}),
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+        if ad.get("imp_url"):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(ad["imp_url"], headers=h),
+                                            timeout=10) as r:
+                    r.read()
+            except Exception:
+                pass
+        return ad
+    except Exception:
+        return None
+
+
+def session_id():
+    return os.environ.get("FREEPI2API_SESSION_ID", "freepi2api")
+
+
+UA = "free-pi-cli/0.4.10"
+
+
 def login(print=print):
     status, device = _post("/auth/github/device", {})
     if status != 200 or "session_id" not in device:
